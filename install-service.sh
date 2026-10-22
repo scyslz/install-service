@@ -83,31 +83,58 @@ TARGET_HOME="$(getent passwd "$RUN_AS" | cut -d: -f6)"
 TARGET_GROUP="$(id -gn "$RUN_AS")"
 WORKDIR="${WORKDIR:-$TARGET_HOME}"
 
+# --- run a shell snippet as the target user --------------------------------
+as_user() {
+  if [ "$(id -u)" -eq 0 ] && [ "$RUN_AS" != "root" ]; then
+    sudo -u "$RUN_AS" "$@"
+  else
+    "$@"
+  fi
+}
+
 # --- resolve command to absolute path --------------------------------------
 BIN="${CMD[0]}"
 if [[ "$BIN" != /* ]]; then
+  Q="$(printf '%q' "$BIN")"
   RESOLVED="$(command -v "$BIN" 2>/dev/null || true)"
-  # fall back to the target user's login-shell PATH (e.g. node/version-manager bins
-  # that root's PATH doesn't include)
-  if [ -z "$RESOLVED" ] && [ -n "$RUN_AS" ]; then
-    if [ "$(id -u)" -eq 0 ] && [ "$RUN_AS" != "root" ]; then
-      RESOLVED="$(sudo -u "$RUN_AS" bash -lc "command -v $(printf '%q' "$BIN")" 2>/dev/null || true)"
-    else
-      RESOLVED="$(bash -lc "command -v $(printf '%q' "$BIN")" 2>/dev/null || true)"
-    fi
+
+  # login shell (reads .profile/.bash_profile)
+  if [ -z "$RESOLVED" ]; then
+    RESOLVED="$(as_user bash -lc "command -v $Q" 2>/dev/null | tail -n1 || true)"
   fi
-  [ -n "$RESOLVED" ] || die "command '$BIN' not found on PATH (tried current and $RUN_AS's login shell); use an absolute path"
+  # interactive shell (reads .bashrc/.zshrc where nvm/asdf/pyenv usually live)
+  if [ -z "$RESOLVED" ]; then
+    RESOLVED="$(as_user bash -ic "command -v $Q" 2>/dev/null | grep -E '^/' | tail -n1 || true)"
+  fi
+  # scan common install dirs for the target user
+  if [ -z "$RESOLVED" ]; then
+    for d in \
+      "$TARGET_HOME/.local/node/bin" \
+      "$TARGET_HOME/.local/bin" \
+      "$TARGET_HOME/.npm-global/bin" \
+      "$TARGET_HOME/.bun/bin" \
+      "$TARGET_HOME/.volta/bin" \
+      "$TARGET_HOME/.cargo/bin" \
+      "$TARGET_HOME/bin" \
+      /usr/local/bin /usr/bin /snap/bin; do
+      if [ -x "$d/$BIN" ]; then RESOLVED="$d/$BIN"; break; fi
+    done
+  fi
+  if [ -z "$RESOLVED" ]; then
+    while IFS= read -r p; do [ -x "$p" ] && { RESOLVED="$p"; break; }; done < <(
+      as_user bash -c "find '$TARGET_HOME' -maxdepth 6 -type f -name $(printf '%q' "$BIN") 2>/dev/null | grep -E '/bin/'" || true
+    )
+  fi
+
+  [ -n "$RESOLVED" ] || die "command '$BIN' not found (tried PATH, login/interactive shell of $RUN_AS, common dirs, and ~/bin scan). Install it, or pass an absolute path: -- /full/path/to/$BIN ..."
   CMD[0]="$RESOLVED"; BIN="$RESOLVED"
 fi
 BIN_DIR="$(dirname "$BIN")"
 
-# --- build PATH (binary dir + target user's login-shell PATH) ---------------
-if [ "$(id -u)" -eq 0 ] && [ "$RUN_AS" != "root" ]; then
-  LOGIN_PATH="$(sudo -u "$RUN_AS" bash -lc 'echo "$PATH"' 2>/dev/null || true)"
-else
-  LOGIN_PATH="$(bash -lc 'echo "$PATH"' 2>/dev/null || true)"
-fi
-SERVICE_PATH="$(printf '%s' "$BIN_DIR:${LOGIN_PATH:-/usr/local/bin:/usr/bin:/bin}" \
+# --- build PATH (binary dir + target user's shell PATHs + common dirs) ------
+LOGIN_PATH="$(as_user bash -lc 'echo "$PATH"' 2>/dev/null || true)"
+INTER_PATH="$(as_user bash -ic 'echo "$PATH"' 2>/dev/null | grep -E '/' | tail -n1 || true)"
+SERVICE_PATH="$(printf '%s' "$BIN_DIR:$LOGIN_PATH:$INTER_PATH:$TARGET_HOME/.local/node/bin:$TARGET_HOME/.local/bin:$TARGET_HOME/.npm-global/bin:$TARGET_HOME/.bun/bin:$TARGET_HOME/.volta/bin:$TARGET_HOME/.cargo/bin:$TARGET_HOME/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin" \
   | tr ':' '\n' | awk 'NF && !seen[$0]++' | paste -sd: -)"
 
 # --- defaults for After/Wants ----------------------------------------------
