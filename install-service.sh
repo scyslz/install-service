@@ -87,7 +87,16 @@ WORKDIR="${WORKDIR:-$TARGET_HOME}"
 BIN="${CMD[0]}"
 if [[ "$BIN" != /* ]]; then
   RESOLVED="$(command -v "$BIN" 2>/dev/null || true)"
-  [ -n "$RESOLVED" ] || die "command '$BIN' not on PATH; use an absolute path"
+  # fall back to the target user's login-shell PATH (e.g. node/version-manager bins
+  # that root's PATH doesn't include)
+  if [ -z "$RESOLVED" ] && [ -n "$RUN_AS" ]; then
+    if [ "$(id -u)" -eq 0 ] && [ "$RUN_AS" != "root" ]; then
+      RESOLVED="$(sudo -u "$RUN_AS" bash -lc "command -v $(printf '%q' "$BIN")" 2>/dev/null || true)"
+    else
+      RESOLVED="$(bash -lc "command -v $(printf '%q' "$BIN")" 2>/dev/null || true)"
+    fi
+  fi
+  [ -n "$RESOLVED" ] || die "command '$BIN' not found on PATH (tried current and $RUN_AS's login shell); use an absolute path"
   CMD[0]="$RESOLVED"; BIN="$RESOLVED"
 fi
 BIN_DIR="$(dirname "$BIN")"
