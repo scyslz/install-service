@@ -120,6 +120,15 @@ if [[ "$BIN" != /* ]]; then
       if [ -x "$d/$BIN" ]; then RESOLVED="$d/$BIN"; break; fi
     done
   fi
+  # version managers with per-version bins (nvm, fnm, volta)
+  if [ -z "$RESOLVED" ]; then
+    for d in \
+      "$TARGET_HOME"/.nvm/versions/node/*/bin \
+      "$TARGET_HOME"/.local/share/fnm/node-versions/*/installation/bin \
+      "$TARGET_HOME"/.volta/tools/image/node/*/bin; do
+      if [ -x "$d/$BIN" ]; then RESOLVED="$d/$BIN"; break; fi
+    done
+  fi
   if [ -z "$RESOLVED" ]; then
     while IFS= read -r p; do [ -x "$p" ] && { RESOLVED="$p"; break; }; done < <(
       as_user bash -c "find '$TARGET_HOME' -maxdepth 6 -type f -name $(printf '%q' "$BIN") 2>/dev/null | grep -E '/bin/'" || true
